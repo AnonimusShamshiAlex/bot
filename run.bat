@@ -28,6 +28,19 @@ set /p "BOT_ADMINS=Ваш Telegram ID для команды /stats (Enter, чт�
 :have_admins
 set /p BOT_ADMINS=<admins.txt
 
+if exist apikey.txt goto have_key
+echo.
+echo Чтобы бот сам писал слайды по теме, нужен ключ нейросети. Подходит любой из них:
+echo   Groq (console.groq.com), ключ начинается с gsk_
+echo   OpenRouter (openrouter.ai), ключ начинается с sk-or-
+echo   Anthropic (console.anthropic.com), ключ начинается с sk-ant-
+echo Без ключа бот работает только в ручном режиме. Можно пропустить.
+set /p "AI_API_KEY=Ключ (Enter, чтобы пропустить): "
+>apikey.txt echo(%AI_API_KEY%
+
+:have_key
+set /p AI_API_KEY=<apikey.txt
+
 echo Обновляю список пакетов...
 call cabal update
 if errorlevel 1 goto failed

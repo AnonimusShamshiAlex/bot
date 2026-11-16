@@ -5,6 +5,10 @@ module Bot.Logic
   , asAdmin
   , advance
   , converse
+  , adopt
+  , release
+  , reserve
+  , refund
   , report
   , commandList
   , botDescription
@@ -18,6 +22,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Text.Read (readMaybe)
 
 import Bot.Store
 import Bot.Types
@@ -29,6 +34,7 @@ newtype Actor (r :: Role) = Actor Int
 data Out
   = Say Text [Text]
   | Deliver Deck Text
+  | Generate Text Int Theme
 
 asAdmin :: Set Int -> Int -> Maybe (Actor 'Admin)
 asAdmin ids uid
@@ -46,6 +52,9 @@ themeName Blue = "Синяя"
 themeButtons :: [Text]
 themeButtons = map themeName [minBound ..]
 
+countButtons :: [Text]
+countButtons = ["5", "8", "12"]
+
 themeByName :: Text -> Maybe Theme
 themeByName raw = lookup (T.toLower (T.strip raw)) table
   where
@@ -56,8 +65,9 @@ themeByName raw = lookup (T.toLower (T.strip raw)) table
 
 commandList :: [(Text, Text)]
 commandList =
-  [ ("new", "Создать новую презентацию")
-  , ("done", "Собрать и получить файл")
+  [ ("auto", "Бот сам напишет презентацию по теме")
+  , ("new", "Собрать презентацию вручную")
+  , ("done", "Получить файл с презентацией")
   , ("undo", "Удалить последний слайд")
   , ("cancel", "Отменить текущую презентацию")
   , ("help", "Как пользоваться ботом")
@@ -65,15 +75,22 @@ commandList =
 
 botDescription :: Text
 botDescription =
-  "Собираю презентации PowerPoint прямо в Telegram. Пришлите название и текст слайдов, \
-  \выберите тему и получите готовый файл .pptx, который открывается в PowerPoint, \
-  \Keynote и Google Slides."
+  "Делаю презентации PowerPoint прямо в Telegram. Напишите тему, и я сам составлю слайды \
+  \и пришлю готовый файл .pptx. Можно и собрать слайды вручную. Файл открывается в \
+  \PowerPoint, Keynote и Google Slides."
 
 botShortDescription :: Text
-botShortDescription = "Делаю презентации .pptx из ваших текстов за пару минут"
+botShortDescription = "Напишите тему и получите презентацию .pptx"
 
-welcome :: Text
-welcome = T.unlines
+welcome :: Bool -> Text
+welcome True = T.unlines
+  [ "Привет! Я делаю презентации PowerPoint."
+  , ""
+  , "Просто напишите тему, например «История Ташкента», и я сам составлю слайды и пришлю файл .pptx."
+  , ""
+  , "Хотите написать слайды сами? Команда /new. Подробности: /help"
+  ]
+welcome False = T.unlines
   [ "Привет! Я собираю презентации PowerPoint из обычного текста."
   , ""
   , "Нажмите /new, придумайте название, выберите тему и присылайте слайды. Когда всё готово, отправьте /done и я пришлю файл."
@@ -81,14 +98,19 @@ welcome = T.unlines
   , "Подробности: /help"
   ]
 
-helpText :: Text
-helpText = T.unlines
+helpText :: Bool -> Text
+helpText autoOn = T.unlines $
   [ "Как это работает"
   , ""
-  , "1. /new — начать презентацию"
-  , "2. Название и тема"
-  , "3. Каждое сообщение — один слайд: первая строка это заголовок, остальные строки это пункты"
-  , "4. /done — получить файл .pptx"
+  ]
+  <> (if autoOn
+        then
+          [ "Автоматически: напишите тему (или /auto), выберите число слайдов и тему оформления. Я составлю слайды и пришлю файл. Потом их можно дописать вручную."
+          , ""
+          ]
+        else [])
+  <>
+  [ "Вручную: /new, название, тема, затем каждое сообщение это один слайд. Первая строка заголовок, остальные строки пункты. В конце /done."
   , ""
   , "Пример слайда:"
   , "Почему Haskell"
@@ -96,11 +118,17 @@ helpText = T.unlines
   , "- чистые функции"
   , "- ленивые вычисления"
   , ""
-  , "Остальное: /undo удаляет последний слайд, /cancel отменяет презентацию. Максимум слайдов: " <> T.pack (show maxSlides) <> "."
+  , "/undo удаляет последний слайд, /cancel отменяет презентацию. Максимум слайдов: " <> T.pack (show maxSlides) <> "."
   ]
 
 askTitle :: Text
 askTitle = "Как назвать презентацию? Это будет заголовок первого слайда."
+
+askTopic :: Text
+askTopic = "О чём будет презентация? Напишите тему."
+
+askCount :: Text
+askCount = "Сколько слайдов сделать? Выберите кнопкой или напишите число от 3 до 15."
 
 askTheme :: Text
 askTheme = "Выберите тему оформления."
@@ -113,6 +141,9 @@ askSlides = T.unlines
 
 doneText :: Text
 doneText = "Готово! Можно добавить ещё слайды и снова нажать /done, а новую презентацию начинает /new."
+
+noAuto :: Text
+noAuto = "Автоматическая генерация сейчас выключена. Соберите презентацию вручную: /new"
 
 command :: Text -> Maybe Text
 command msg = case T.uncons stripped of
@@ -135,12 +166,15 @@ parseSlide msg = case filter (not . T.null) (map T.strip (T.lines msg)) of
     | any ((> 250) . T.length) rest -> Left "Один из пунктов длиннее 250 символов."
     | otherwise -> Right (Slide h (map stripMarker rest))
 
-advance :: Text -> SomeSession -> (SomeSession, Out)
-advance msg cur@(SomeSession s) = case command msg of
-  Just "/start" -> (cur, Say welcome ["/new"])
-  Just "/help" -> (cur, Say helpText [])
+advance :: Bool -> Text -> SomeSession -> (SomeSession, Out)
+advance autoOn msg cur@(SomeSession s) = case command msg of
+  Just "/start" -> (cur, Say (welcome autoOn) (if autoOn then [] else ["/new"]))
+  Just "/help" -> (cur, Say (helpText autoOn) [])
   Just "/new" -> (SomeSession (beginDeck SIdle), Say askTitle [])
-  Just "/cancel" -> (SomeSession SIdle, Say "Отменено. Чтобы начать заново, нажмите /new." ["/new"])
+  Just "/auto"
+    | autoOn -> (SomeSession (beginAuto SIdle), Say askTopic [])
+    | otherwise -> (cur, Say noAuto ["/new"])
+  Just "/cancel" -> (SomeSession SIdle, Say "Отменено. Чтобы начать заново, напишите тему или нажмите /new." ["/new"])
   Just "/undo" -> undoLast
   Just "/done" -> finishDeck
   Just _ -> (cur, Say "Не знаю такой команды. Список команд: /help" [])
@@ -155,11 +189,21 @@ advance msg cur@(SomeSession s) = case command msg of
     finishDeck = case s of
       SCollecting _ _ Nil -> (cur, Say "Сначала добавьте хотя бы один слайд." [])
       SCollecting _ _ (Cons _ _) -> (cur, Deliver (finish s) doneText)
+      SBusy -> (cur, Say "Презентация ещё генерируется, подождите немного." [])
       _ -> (cur, Say "Пока нечего собирать. Начните с /new." ["/new"])
+
+    acceptTopic :: Session 'AutoTopic -> (SomeSession, Out)
+    acceptTopic p
+      | T.length t < 3 || T.length t > 200 = (cur, Say "Тема должна быть от 3 до 200 символов." [])
+      | otherwise = (SomeSession (setTopic t p), Say askCount countButtons)
+      where
+        t = T.strip msg
 
     plain :: (SomeSession, Out)
     plain = case s of
-      SIdle -> (cur, Say "Чтобы создать презентацию, нажмите /new." ["/new"])
+      SIdle
+        | autoOn -> acceptTopic (beginAuto s)
+        | otherwise -> (cur, Say "Чтобы создать презентацию, нажмите /new." ["/new"])
       SWantTitle ->
         let t = T.strip msg
         in if T.null t || T.length t > 80
@@ -177,17 +221,52 @@ advance msg cur@(SomeSession s) = case command msg of
               ( SomeSession (addSlide sl s)
               , Say ("Слайд " <> T.pack (show (slidesLen ss + 1)) <> " добавлен. Присылайте следующий или отправьте /done.") ["/done"]
               )
+      SAutoTopic -> acceptTopic s
+      SAutoCount _ -> case readMaybe (T.unpack (T.strip msg)) of
+        Just k | k >= 3 && k <= 15 -> (SomeSession (setCount k s), Say askTheme themeButtons)
+        _ -> (cur, Say "Нужно число от 3 до 15." countButtons)
+      SAutoTheme topic k -> case themeByName msg of
+        Nothing -> (cur, Say "Выберите тему кнопкой или напишите её название." themeButtons)
+        Just th -> (SomeSession (startGen s), Generate topic k th)
+      SBusy -> (cur, Say "Презентация ещё генерируется, подождите немного." [])
 
-converse :: Store -> Int -> Text -> IO Out
-converse st cid msg = atomically $ do
+converse :: Bool -> Store -> Int -> Text -> IO Out
+converse autoOn st cid msg = atomically $ do
   m <- readTVar (sessions st)
   let cur = Map.findWithDefault (SomeSession SIdle) cid m
-      (next, out) = advance msg cur
+      (next, out) = advance autoOn msg cur
   writeTVar (sessions st) (Map.insert cid next m)
   case out of
     Deliver _ _ -> modifyTVar' (made st) (+ 1)
-    Say _ _ -> pure ()
+    _ -> pure ()
   pure out
+
+adopt :: Store -> Int -> Text -> Theme -> [Slide] -> IO Bool
+adopt st cid topic th sl = atomically $ do
+  m <- readTVar (sessions st)
+  case Map.lookup cid m of
+    Just cur | isBusy cur -> do
+      writeTVar (sessions st) (Map.insert cid (loadDeck (T.take 80 topic) th sl) m)
+      modifyTVar' (made st) (+ 1)
+      pure True
+    _ -> pure False
+
+release :: Store -> Int -> IO ()
+release st cid = atomically $
+  modifyTVar' (sessions st) (Map.adjust (\c -> if isBusy c then SomeSession SIdle else c) cid)
+
+reserve :: Store -> Int -> Int -> IO Bool
+reserve st cid limit = atomically $ do
+  u <- readTVar (usage st)
+  let n = Map.findWithDefault 0 cid u
+  if n >= limit
+    then pure False
+    else do
+      writeTVar (usage st) (Map.insert cid (n + 1) u)
+      pure True
+
+refund :: Store -> Int -> IO ()
+refund st cid = atomically $ modifyTVar' (usage st) (Map.adjust (\n -> max 0 (n - 1)) cid)
 
 report :: Actor 'Admin -> Store -> IO Text
 report (Actor _) st = do

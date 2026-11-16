@@ -8,8 +8,9 @@ import Bot.Types
 
 data Store = Store
   { sessions :: TVar (Map Int SomeSession)
+  , usage :: TVar (Map Int Int)
   , made :: TVar Int
   }
 
 newStore :: IO Store
-newStore = Store <$> newTVarIO Map.empty <*> newTVarIO 0
+newStore = Store <$> newTVarIO Map.empty <*> newTVarIO Map.empty <*> newTVarIO 0

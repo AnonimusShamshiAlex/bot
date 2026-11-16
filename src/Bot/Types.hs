@@ -15,7 +15,13 @@ module Bot.Types
   , addSlide
   , undoSlide
   , finish
+  , beginAuto
+  , setTopic
+  , setCount
+  , startGen
+  , loadDeck
   , isCollecting
+  , isBusy
   ) where
 
 import Data.Text (Text)
@@ -40,13 +46,28 @@ data Slides (n :: Count) where
   Nil  :: Slides 'Z
   Cons :: Slide -> Slides n -> Slides ('S n)
 
-data Stage = Idle | WantTitle | WantTheme | Collecting Count
+data SomeSlides where
+  SomeSlides :: Slides n -> SomeSlides
+
+data Stage
+  = Idle
+  | WantTitle
+  | WantTheme
+  | Collecting Count
+  | AutoTopic
+  | AutoCount
+  | AutoTheme
+  | Busy
 
 data Session (s :: Stage) where
   SIdle       :: Session 'Idle
   SWantTitle  :: Session 'WantTitle
   SWantTheme  :: Text -> Session 'WantTheme
   SCollecting :: Text -> Theme -> Slides n -> Session ('Collecting n)
+  SAutoTopic  :: Session 'AutoTopic
+  SAutoCount  :: Text -> Session 'AutoCount
+  SAutoTheme  :: Text -> Int -> Session 'AutoTheme
+  SBusy       :: Session 'Busy
 
 data SomeSession where
   SomeSession :: Session s -> SomeSession
@@ -77,6 +98,26 @@ undoSlide (SCollecting t th (Cons _ rest)) = SCollecting t th rest
 finish :: Session ('Collecting ('S n)) -> Deck
 finish (SCollecting t th ss) = Deck t th (reverse (slidesToList ss))
 
+beginAuto :: Session 'Idle -> Session 'AutoTopic
+beginAuto SIdle = SAutoTopic
+
+setTopic :: Text -> Session 'AutoTopic -> Session 'AutoCount
+setTopic t SAutoTopic = SAutoCount t
+
+setCount :: Int -> Session 'AutoCount -> Session 'AutoTheme
+setCount k (SAutoCount t) = SAutoTheme t k
+
+startGen :: Session 'AutoTheme -> Session 'Busy
+startGen (SAutoTheme _ _) = SBusy
+
+loadDeck :: Text -> Theme -> [Slide] -> SomeSession
+loadDeck t th sl = case foldl (\(SomeSlides ss) x -> SomeSlides (Cons x ss)) (SomeSlides Nil) sl of
+  SomeSlides ss -> SomeSession (SCollecting t th ss)
+
 isCollecting :: SomeSession -> Bool
 isCollecting (SomeSession (SCollecting {})) = True
 isCollecting _ = False
+
+isBusy :: SomeSession -> Bool
+isBusy (SomeSession SBusy) = True
+isBusy _ = False
