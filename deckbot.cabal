@@ -1,0 +1,29 @@
+cabal-version:      3.0
+name:               deckbot
+version:            0.2.0.0
+build-type:         Simple
+
+executable deckbot
+  main-is:            Main.hs
+  hs-source-dirs:     app, src
+  other-modules:      Bot.Api
+                      Bot.Logic
+                      Bot.Pptx
+                      Bot.Store
+                      Bot.Types
+  build-depends:      base >=4.16 && <5
+                    , aeson >=2.0 && <2.3
+                    , bytestring
+                    , containers
+                    , directory
+                    , filepath
+                    , http-client >=0.7
+                    , http-client-tls
+                    , stm
+                    , text
+                    , time
+  default-language:   GHC2021
+  default-extensions: OverloadedStrings
+                      DataKinds
+                      GADTs
+  ghc-options:        -Wall
